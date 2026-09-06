@@ -200,7 +200,7 @@ def sync_cookies(paste=False):
         }
     )
     print(f"Signed in as '{user}'. Saved to {CONFIG_PATH}")
-    print("Ready — try: leetcode-save --latest")
+    print("Ready. Now just run:  leetcode-save")
 
 
 def load_config():
@@ -228,7 +228,7 @@ def load_config():
         for key in missing:
             print(f"  {key}=...")
         if "LEETCODE_SESSION" in missing or "LEETCODE_CSRF" in missing:
-            print("\nFor the cookies, run:  leetcode-save --sync-cookies")
+            print("\nTo log in, run:  leetcode-save --login")
         sys.exit(1)
 
     repo = Path(repo_path).expanduser()
@@ -259,7 +259,7 @@ def auth_failed():
     print("LeetCode rejected your session cookie — they expire periodically.")
     print("To refresh: on leetcode.com open DevTools -> Network, reload the page,")
     print("right-click the top request -> Copy -> Copy as cURL, then run:")
-    print("  leetcode-save --sync-cookies")
+    print("  leetcode-save --login")
     sys.exit(1)
 
 
@@ -638,7 +638,7 @@ Examples:
 First-time setup:
   In Chrome on leetcode.com (logged in): DevTools -> Network, reload,
   right-click the top request -> Copy -> Copy as cURL.
-  Then run: leetcode-save --sync-cookies
+  Then run: leetcode-save --login
 
 Running with no arguments walks your submission history and saves every
 accepted solution missing from the repo. Files already there are left
