@@ -6,8 +6,10 @@ import re
 import sys
 import json
 import time
+import queue
 import shutil
-import select
+import platform
+import threading
 import warnings
 import subprocess
 import argparse
@@ -100,7 +102,11 @@ def write_config_values(updates):
         out.append(f"{key}={value}")
 
     CONFIG_PATH.write_text("\n".join(out) + "\n")
-    CONFIG_PATH.chmod(0o600)
+    try:
+        CONFIG_PATH.chmod(0o600)
+    except OSError:
+        # Windows has no POSIX mode bits; the file is still user-scoped.
+        pass
 
 
 def whoami(session, csrf):
@@ -132,24 +138,68 @@ def extract_cookies(raw):
     return None
 
 
-def read_paste(idle=0.5, wait=300):
+def read_clipboard():
+    """Best-effort clipboard read. Returns '' when there's no way to do it."""
+    system = platform.system()
+    if system == "Darwin":
+        cmds = [["pbpaste"]]
+    elif system == "Windows":
+        cmds = [["powershell", "-NoProfile", "-Command", "Get-Clipboard"]]
+    else:
+        cmds = [
+            ["wl-paste"],
+            ["xclip", "-selection", "clipboard", "-o"],
+            ["xsel", "--clipboard", "--output"],
+        ]
+
+    for cmd in cmds:
+        if not shutil.which(cmd[0]):
+            continue
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout
+
+    return ""
+
+
+def read_paste(idle=0.6, wait=300):
     """Read a pasted blob from the terminal without needing Ctrl-D.
 
     A paste arrives as a fast burst, so once input goes quiet for `idle`
-    seconds it is done. Everything is consumed, so no leftover lines spill
-    into the shell after this returns.
+    seconds it is done. Reads on a daemon thread rather than via select(),
+    which on Windows only accepts sockets and would raise on stdin.
     """
-    if not select.select([sys.stdin], [], [], wait)[0]:
+    lines = queue.Queue()
+
+    def reader():
+        try:
+            for line in sys.stdin:
+                lines.put(line)
+        except Exception:
+            pass
+        lines.put(None)
+
+    threading.Thread(target=reader, daemon=True).start()
+
+    try:
+        first = lines.get(timeout=wait)
+    except queue.Empty:
+        return ""
+    if first is None:
         return ""
 
-    chunks = []
+    chunks = [first]
     while True:
-        if not select.select([sys.stdin], [], [], idle)[0]:
+        try:
+            item = lines.get(timeout=idle)
+        except queue.Empty:
             break
-        data = os.read(sys.stdin.fileno(), 65536)
-        if not data:
+        if item is None:
             break
-        chunks.append(data.decode("utf-8", errors="replace"))
+        chunks.append(item)
 
     return "".join(chunks)
 
@@ -162,8 +212,7 @@ def sync_cookies(paste=False):
         found = extract_cookies(sys.stdin.read())
     else:
         if not paste:
-            clip = subprocess.run(["pbpaste"], capture_output=True, text=True).stdout
-            found = extract_cookies(clip)
+            found = extract_cookies(read_clipboard())
             if found:
                 print("Found cookies on the clipboard.")
 

@@ -64,16 +64,34 @@ editor with syntax highlighting.
 
 ## Install
 
+Requires Python 3.8+ and `git`.
+
+**macOS / Linux**
+
 ```bash
 git clone https://github.com/yashwanthgh/leetcode-save.git
 cd leetcode-save
 bash setup.sh
 ```
 
-`setup.sh` installs the Python dependencies and symlinks `leetcode-save` into the first
-writable directory it finds — `~/.local/bin`, then `/opt/homebrew/bin`, then
-`/usr/local/bin` — creating `~/.local/bin` if none exist. It tells you if that directory
-isn't on your `PATH`. Requires Python 3.8+ and `git`.
+Installs the dependencies and symlinks `leetcode-save` into the first writable directory
+it finds — `~/.local/bin`, then `/opt/homebrew/bin`, then `/usr/local/bin` — creating
+`~/.local/bin` if none exist. It warns you if that directory isn't on your `PATH`.
+
+> If your shell says `command not found` right after installing, run `rehash` (zsh caches
+> what's on your `PATH` at startup) or just open a new terminal.
+
+**Windows**
+
+```powershell
+git clone https://github.com/yashwanthgh/leetcode-save.git
+cd leetcode-save
+.\setup.ps1
+```
+
+Installs the dependencies and puts a `leetcode-save.cmd` shim in
+`%LOCALAPPDATA%\leetcode-save\bin`, adding it to your user `PATH`. **Open a new terminal
+afterwards** so the PATH change takes effect.
 
 ## Setup
 
@@ -98,7 +116,12 @@ table.
 It then works out where to put your solutions: if you already have a clone whose name
 looks like a LeetCode repo, it uses it; if you have several, it asks which; and if you
 have none, it offers to create one on GitHub and clone it for you. Everything lands in
-`~/.leetcode-save.env` with `chmod 600` — you never edit that file yourself.
+`~/.leetcode-save.env` (`%USERPROFILE%\.leetcode-save.env` on Windows) — you never edit
+that file yourself.
+
+Firefox and Edge have the same **Copy as cURL** option in their Network tab, so they work
+too. On Windows, use *Copy as cURL (bash)* if your browser offers the choice — though the
+cookies are extracted either way.
 
 Run `--login` again whenever your session expires. The tool tells you when that happens.
 
