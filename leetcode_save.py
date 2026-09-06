@@ -812,6 +812,31 @@ def save_to_repo(problem, submission_details, repo_path, lang_key, version=False
     return rel(versioned), "versioned"
 
 
+def show_version():
+    """Print which copy of the script is running, and how current it is."""
+    script = Path(__file__).resolve()
+    print(f"script : {script}")
+
+    here = script.parent
+    commit = git(here, "log", "-1", "--format=%h %ad %s", "--date=format:%Y-%m-%d %H:%M",
+                 check=False)
+    if commit:
+        print(f"commit : {commit}")
+        behind = git(here, "rev-list", "--count", "HEAD..@{u}", check=False)
+        if behind.isdigit() and int(behind) > 0:
+            print(f"         {behind} commit(s) behind origin - run: git -C '{here}' pull")
+        elif behind == "0":
+            print("         up to date")
+    else:
+        print("commit : not a git checkout, so it can't be updated with git pull")
+
+    print(f"python : {'.'.join(map(str, sys.version_info[:3]))}")
+    print(f"config : {CONFIG_PATH}")
+    repo = os.getenv("GITHUB_REPO_PATH")
+    print(f"repo   : {repo or '(not set yet)'}")
+    print("layout : code/ and sql/")
+
+
 def require_git():
     if not shutil.which("git"):
         print("git isn't installed, or isn't on your PATH.")
@@ -1179,6 +1204,11 @@ alone, so it is safe to re-run and doubles as a first-time backfill.
     )
     parser.add_argument("slug", nargs="?", help="Problem slug, e.g. two-sum")
     parser.add_argument(
+        "--version",
+        action="store_true",
+        help="Show which copy of the script is running and whether it's current",
+    )
+    parser.add_argument(
         "--login",
         action="store_true",
         help="Log in: paste a 'Copy as cURL' blob when prompted",
@@ -1202,6 +1232,11 @@ alone, so it is safe to re-run and doubles as a first-time backfill.
     args = parser.parse_args()
 
     require_git()
+
+    if args.version:
+        load_dotenv(CONFIG_PATH) if CONFIG_PATH.exists() else None
+        show_version()
+        return
 
     if args.login or args.sync_cookies:
         sync_cookies(paste=args.login)
