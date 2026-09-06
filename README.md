@@ -4,15 +4,21 @@ A small CLI that archives your LeetCode solutions to a GitHub repo. Run one comm
 you solve a problem and it saves a single self-contained file — your accepted code on top,
 the full problem statement in a comment block below — then commits and pushes it.
 
-One file per problem. No folders, no scattered READMEs.
+One file per problem, split into `code/` and `sql/`:
 
 ```
 leetcode-solutions/
-├── 0001-two-sum.java
-├── 0020-valid-parentheses.java
-├── 0042-trapping-rain-water.java
-└── 0146-lru-cache.java
+├── code/
+│   ├── 0001-two-sum.java
+│   ├── 0013-roman-to-integer.cs
+│   └── 0146-lru-cache.java
+└── sql/
+    ├── 0175-combine-two-tables.sql
+    └── 0620-not-boring-movies.sql
 ```
+
+If you already have solutions saved flat in the repo root, the next run moves them
+into place with `git mv`, so the history follows each file.
 
 ## What a saved file looks like
 
@@ -150,8 +156,8 @@ The slug is the last part of the problem URL — `leetcode.com/problems/two-sum/
 Solve the same problem in more than one language and each gets its own file:
 
 ```
-0013-roman-to-integer.java
-0013-roman-to-integer.cs
+code/0013-roman-to-integer.java
+code/0013-roman-to-integer.cs
 ```
 
 Supported: Java, Python, C, C++, C#, JavaScript, TypeScript, Go, Rust, Kotlin, Swift,
@@ -165,9 +171,9 @@ If you improve a solution and save it again, the old file stays and the new one 
 beside it:
 
 ```
-0001-two-sum.java        ← your first accepted answer
-0001.1-two-sum.java      ← the improved one
-0001.2-two-sum.java      ← and the next
+code/0001-two-sum.java        <- your first accepted answer
+code/0001.1-two-sum.java      <- the improved one
+code/0001.2-two-sum.java      <- and the next
 ```
 
 Re-saving identical code is a no-op, so you won't collect duplicates. A full sync keeps

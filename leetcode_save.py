@@ -105,12 +105,22 @@ def write_config_values(updates):
     for key, value in remaining.items():
         out.append(f"{key}={value}")
 
-    CONFIG_PATH.write_text("\n".join(out) + "\n", encoding="utf-8", newline="\n")
+    write_lf(CONFIG_PATH, "\n".join(out) + "\n")
     try:
         CONFIG_PATH.chmod(0o600)
     except OSError:
         # Windows has no POSIX mode bits; the file is still user-scoped.
         pass
+
+
+def write_lf(path, content):
+    """Write UTF-8 with LF endings.
+
+    Path.write_text only accepts newline= from Python 3.10, and the platform
+    default would give CRLF on Windows.
+    """
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(content)
 
 
 def whoami(session, csrf):
@@ -429,11 +439,10 @@ def create_repo():
         return None
 
     # A brand new repo has no commits, so give it one and set upstream.
-    (target / "README.md").write_text(
+    write_lf(
+        target / "README.md",
         "# LeetCode Solutions\n\nSaved with "
         "[leetcode-save](https://github.com/yashwanthgh/leetcode-save).\n",
-        encoding="utf-8",
-        newline="\n",
     )
     git(target, "add", "README.md")
     git(target, "commit", "-m", "Add README")
@@ -776,28 +785,31 @@ def save_to_repo(problem, submission_details, repo_path, lang_key, version=False
     ext, style = LANG_MAP.get(lang_key.lower(), ("txt", SLASH))
     content = build_file_content(problem, submission_details, style)
 
-    base = repo_path / f"{num}-{slug}.{ext}"
+    folder = repo_path / folder_for_ext(ext)
+    folder.mkdir(exist_ok=True)
+    base = folder / f"{num}-{slug}.{ext}"
+    rel = lambda p: p.relative_to(repo_path).as_posix()
 
     if not base.exists():
-        base.write_text(content, encoding="utf-8", newline="\n")
-        return base.name, "new"
+        write_lf(base, content)
+        return rel(base), "new"
 
     if not version:
-        base.write_text(content, encoding="utf-8", newline="\n")
-        return base.name, "updated"
+        write_lf(base, content)
+        return rel(base), "updated"
 
     # Runtime and memory differ between runs, so compare only the code itself.
     code = submission_details["code"].rstrip()
-    for f in sorted(repo_path.glob(f"{num}*-{slug}.{ext}")):
+    for f in sorted(folder.glob(f"{num}*-{slug}.{ext}")):
         if f.read_text(encoding="utf-8").startswith(code):
-            return f.name, "duplicate"
+            return rel(f), "duplicate"
 
     n = 1
-    while (repo_path / f"{num}.{n}-{slug}.{ext}").exists():
+    while (folder / f"{num}.{n}-{slug}.{ext}").exists():
         n += 1
-    versioned = repo_path / f"{num}.{n}-{slug}.{ext}"
-    versioned.write_text(content, encoding="utf-8", newline="\n")
-    return versioned.name, "versioned"
+    versioned = folder / f"{num}.{n}-{slug}.{ext}"
+    write_lf(versioned, content)
+    return rel(versioned), "versioned"
 
 
 def require_git():
@@ -958,15 +970,68 @@ def git_commit(repo_path, filename, problem_title):
 
 SOLUTION_FILE = re.compile(r"^\d+(?:\.\d+)?-(.+)\.([^.]+)$")
 
+SQL_FOLDER = "sql"
+CODE_FOLDER = "code"
+
+
+def folder_for_ext(ext):
+    return SQL_FOLDER if ext.lower() == "sql" else CODE_FOLDER
+
+
+def iter_solution_files(repo_path):
+    """Every solution file, in the folders and loose in the root alike."""
+    roots = [repo_path, repo_path / CODE_FOLDER, repo_path / SQL_FOLDER]
+    for root in roots:
+        try:
+            entries = list(root.iterdir())
+        except OSError:
+            continue
+        for f in entries:
+            if not f.is_file():
+                continue
+            m = SOLUTION_FILE.match(f.name)
+            if m:
+                yield f, m.group(1), m.group(2)
+
 
 def existing_solutions(repo_path):
     """(slug, extension) pairs already saved, read straight off the filenames."""
-    found = set()
-    for f in repo_path.iterdir():
-        m = SOLUTION_FILE.match(f.name)
-        if m:
-            found.add((m.group(1), m.group(2)))
-    return found
+    return {(slug, ext) for _, slug, ext in iter_solution_files(repo_path)}
+
+
+def migrate_layout(repo_path):
+    """Move solution files that predate the code/ and sql/ split.
+
+    Uses 'git mv' so history follows the file. Returns how many moved.
+    """
+    moves = []
+    for f in list(iter_solution_files(repo_path)):
+        path, _, ext = f
+        if path.parent != repo_path:
+            continue
+        dest = repo_path / folder_for_ext(ext) / path.name
+        if dest.exists():
+            continue
+        moves.append((path, dest))
+
+    if not moves:
+        return 0
+
+    print(f"Tidying up: moving {len(moves)} solution(s) into code/ and sql/")
+    for src, dest in moves:
+        dest.parent.mkdir(exist_ok=True)
+        rel_src = src.relative_to(repo_path).as_posix()
+        rel_dest = dest.relative_to(repo_path).as_posix()
+        git(repo_path, "mv", "--", rel_src, rel_dest, check=False)
+        if not dest.exists():
+            # Untracked files aren't git mv-able; move then stage by hand.
+            shutil.move(str(src), str(dest))
+            git(repo_path, "add", "--", rel_dest)
+
+    git(repo_path, "add", "-A", "--", ".")
+    git(repo_path, "commit", "-m", "Sort solutions into code/ and sql/")
+    print("  done")
+    return len(moves)
 
 
 def iter_submissions(headers, page=20, max_pages=250):
@@ -1007,8 +1072,11 @@ def iter_submissions(headers, page=20, max_pages=250):
 def sync_all(config, headers, no_push, lang_filter=None):
     """Save every accepted solution that isn't in the repo yet."""
     repo = config["repo_path"]
-    have = existing_solutions(repo)
     print(f"Saving to: {repo}")
+
+    migrate_layout(repo)
+
+    have = existing_solutions(repo)
     print(f"Already there: {len(have)} solution(s)")
     print("")
     print("Checking LeetCode for anything new...")
