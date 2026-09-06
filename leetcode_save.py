@@ -818,17 +818,27 @@ def show_version():
     print(f"script : {script}")
 
     here = script.parent
-    commit = git(here, "log", "-1", "--format=%h %ad %s", "--date=format:%Y-%m-%d %H:%M",
-                 check=False)
-    if commit:
+    # Only trust git here if this repo actually tracks this script. A loose
+    # copy can easily sit inside some unrelated repo -- a home directory under
+    # version control, say -- and report that project's history instead.
+    tracked = git(
+        here, "ls-files", "--error-unmatch", "--", script.name, check=False
+    )
+    if not tracked:
+        print("commit : unknown - this copy isn't inside a checkout of the tool")
+        print("         'git pull' will not update it. Re-run setup.sh from the")
+        print("         folder you cloned, so the command runs that copy.")
+    else:
+        commit = git(
+            here, "log", "-1", "--format=%h %ad %s",
+            "--date=format:%Y-%m-%d %H:%M", check=False,
+        )
         print(f"commit : {commit}")
         behind = git(here, "rev-list", "--count", "HEAD..@{u}", check=False)
         if behind.isdigit() and int(behind) > 0:
             print(f"         {behind} commit(s) behind origin - run: git -C '{here}' pull")
         elif behind == "0":
             print("         up to date")
-    else:
-        print("commit : not a git checkout, so it can't be updated with git pull")
 
     print(f"python : {'.'.join(map(str, sys.version_info[:3]))}")
     print(f"config : {CONFIG_PATH}")
