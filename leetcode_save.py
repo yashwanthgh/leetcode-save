@@ -840,6 +840,55 @@ def git(repo_path, *cmd, check=True, timeout=120):
     return result.stdout.strip()
 
 
+def git_push(repo_path):
+    """Push, setting upstream on the first push if the branch has none."""
+    result = subprocess.run(
+        ["git", "push"],
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=180,
+    )
+    if result.returncode == 0:
+        return True
+
+    stderr = result.stderr or ""
+
+    if not git(repo_path, "remote", check=False):
+        print("This repo isn't connected to GitHub, so there's nowhere to push.")
+        print("Your solutions are committed on this computer and safe.")
+        print("")
+        print("Connect it, then run leetcode-save again:")
+        print(f"  cd {repo_path}")
+        print("  git remote add origin <your repo url>")
+        return False
+
+    # A freshly created or freshly init'd repo has no tracking branch yet,
+    # which plain 'git push' refuses to guess at.
+    if "no upstream branch" in stderr or "No configured push destination" in stderr:
+        branch = git(repo_path, "rev-parse", "--abbrev-ref", "HEAD")
+        print(f"First push from this repo - linking branch '{branch}' to origin.")
+        git(repo_path, "push", "-u", "origin", branch, timeout=180)
+        return True
+
+    print(f"git push failed: {result.stderr.strip() or 'no output'}")
+    print("Your solutions are committed locally, so nothing is lost.")
+    print("Fix the problem above, then run leetcode-save again to upload them.")
+    return False
+
+
+def unpushed_count(repo_path):
+    """Commits sitting locally that the remote doesn't have yet."""
+    upstream = git(repo_path, "rev-parse", "--abbrev-ref", "@{u}", check=False)
+    if not upstream:
+        # No upstream means nothing has ever been pushed from this branch.
+        return len(git(repo_path, "log", "--format=%h", check=False).splitlines())
+    out = git(repo_path, "rev-list", "--count", "@{u}..HEAD", check=False)
+    return int(out) if out.isdigit() else 0
+
+
 def remote_url(repo_path):
     """Browsable URL for the repo's origin, if it has a recognisable one."""
     url = git(repo_path, "remote", "get-url", "origin", check=False)
@@ -971,12 +1020,11 @@ def sync_all(config, headers, no_push, lang_filter=None):
         print("Those are usually temporary - try again in a minute.")
         print("")
 
-    if not saved:
+    if saved:
+        print(f"Saved {len(saved)} new solution(s). Left the other {skipped} alone.")
+    else:
         print(f"Nothing new to save. All {skipped} of your solutions are")
         print("already in the repo, and none of them were touched.")
-        return
-
-    print(f"Saved {len(saved)} new solution(s). Left the other {skipped} alone.")
 
     if no_push:
         print("")
@@ -984,8 +1032,19 @@ def sync_all(config, headers, no_push, lang_filter=None):
         print("Run 'leetcode-save' again without it to upload them.")
         return
 
+    # Not gated on `saved`: an earlier run may have committed fine but failed
+    # to push, and those commits would otherwise never be uploaded.
+    pending = unpushed_count(repo)
+    if not pending:
+        return
+
+    if not saved:
+        print("")
+        print(f"But {pending} earlier commit(s) were never uploaded.")
+
     print("Uploading to GitHub...")
-    git(repo, "push")
+    if not git_push(repo):
+        return
     print("Done.")
 
     url = remote_url(repo)
@@ -1107,7 +1166,8 @@ alone, so it is safe to re-run and doubles as a first-time backfill.
     if args.no_push:
         print("Committed locally (--no-push).")
     else:
-        git(repo, "push")
+        if not git_push(repo):
+            return
         print("Pushed to GitHub.")
 
     print(f"\nDone! #{problem['questionFrontendId']} {problem['title']}")
