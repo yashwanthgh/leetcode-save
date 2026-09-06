@@ -840,6 +840,40 @@ def git(repo_path, *cmd, check=True, timeout=120):
     return result.stdout.strip()
 
 
+def remote_default_branch(repo_path):
+    """The branch name the remote treats as its default, if it says."""
+    out = git(
+        repo_path, "ls-remote", "--symref", "origin", "HEAD", check=False, timeout=60
+    )
+    m = re.search(r"^ref:\s+refs/heads/(\S+)\s+HEAD", out, re.MULTILINE)
+    return m.group(1) if m else None
+
+
+def first_push_branch(repo_path):
+    """Branch to push on a first push, renaming a stale local name to match.
+
+    'git init' still calls the first branch 'master' while GitHub calls it
+    'main', so pushing blind would put solutions on a side branch that the
+    repo's front page never shows. Renaming is only safe here because
+    nothing has been pushed from this branch yet.
+    """
+    branch = git(repo_path, "rev-parse", "--abbrev-ref", "HEAD")
+    target = remote_default_branch(repo_path) or "main"
+
+    if branch == target:
+        return branch
+
+    existing = git(repo_path, "branch", "--format=%(refname:short)", check=False)
+    if target in existing.splitlines():
+        # Renaming would clobber a real branch; leave well alone.
+        print(f"Note: pushing '{branch}', but the repo's default is '{target}'.")
+        return branch
+
+    print(f"Renaming branch '{branch}' to '{target}' to match GitHub.")
+    git(repo_path, "branch", "-M", target)
+    return target
+
+
 def git_push(repo_path):
     """Push, setting upstream on the first push if the branch has none."""
     result = subprocess.run(
@@ -868,8 +902,8 @@ def git_push(repo_path):
     # A freshly created or freshly init'd repo has no tracking branch yet,
     # which plain 'git push' refuses to guess at.
     if "no upstream branch" in stderr or "No configured push destination" in stderr:
-        branch = git(repo_path, "rev-parse", "--abbrev-ref", "HEAD")
-        print(f"First push from this repo - linking branch '{branch}' to origin.")
+        branch = first_push_branch(repo_path)
+        print(f"First push from this repo - linking '{branch}' to origin.")
         git(repo_path, "push", "-u", "origin", branch, timeout=180)
         return True
 
