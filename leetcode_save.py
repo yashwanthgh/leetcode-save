@@ -5,9 +5,14 @@ import os
 import re
 import sys
 import json
+import warnings
 import subprocess
 import argparse
 from pathlib import Path
+
+# macOS ships a system Python linked against LibreSSL, which makes urllib3 emit a
+# NotOpenSSLWarning on every run. It is harmless here and only confuses users.
+warnings.filterwarnings("ignore", message=r".*OpenSSL.*")
 
 try:
     import requests

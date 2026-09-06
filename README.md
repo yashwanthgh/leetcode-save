@@ -70,8 +70,10 @@ cd leetcode-save
 bash setup.sh
 ```
 
-`setup.sh` installs the Python dependencies and symlinks `leetcode-save` into
-`/usr/local/bin`. Requires Python 3.8+ and `git`.
+`setup.sh` installs the Python dependencies and symlinks `leetcode-save` into the first
+writable directory it finds — `~/.local/bin`, then `/opt/homebrew/bin`, then
+`/usr/local/bin` — creating `~/.local/bin` if none exist. It tells you if that directory
+isn't on your `PATH`. Requires Python 3.8+ and `git`.
 
 ## Setup
 
