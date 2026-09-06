@@ -10,3 +10,9 @@ __pycache__/
 *.class
 .venv/
 venv/
+
+# A solutions repo cloned inside this checkout. Nesting it here is not
+# recommended, but if someone does, don't let it get committed into the tool.
+/leetcode-solutions/
+/leetcode/
+/dsa-practice/
