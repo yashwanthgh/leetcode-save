@@ -199,8 +199,55 @@ def sync_cookies(paste=False):
             "LEETCODE_USERNAME": user,
         }
     )
-    print(f"Signed in as '{user}'. Saved to {CONFIG_PATH}")
+    print(f"Signed in as '{user}'.")
+
+    if not valid_repo_path(os.getenv("GITHUB_REPO_PATH")):
+        prompt_repo_path()
+
+    print("")
     print("Ready. Now just run:  leetcode-save")
+
+
+def valid_repo_path(raw):
+    if not raw:
+        return None
+    p = Path(raw).expanduser()
+    return p if (p / ".git").is_dir() else None
+
+
+def prompt_repo_path():
+    """Ask where the solutions repo lives, rather than making them edit a file."""
+    print("")
+    print("Where should your solutions be saved?")
+    print("This must be a folder you cloned from GitHub. If you don't have one yet,")
+    print("open another terminal and run:")
+    print("    gh repo create leetcode-solutions --public --clone")
+    print("")
+
+    for _ in range(3):
+        try:
+            answer = input("Path to your solutions repo: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("")
+            sys.exit(1)
+
+        if not answer:
+            continue
+
+        repo = Path(answer).expanduser()
+        if not repo.is_dir():
+            print(f"  No such folder: {repo}")
+            continue
+        if not (repo / ".git").is_dir():
+            print(f"  {repo} isn't a git repo — clone it from GitHub first.")
+            continue
+
+        write_config_values({"GITHUB_REPO_PATH": str(repo)})
+        print(f"  Saved: {repo}")
+        return
+
+    print("Giving up. Re-run: leetcode-save --login")
+    sys.exit(1)
 
 
 def load_config():
@@ -210,32 +257,25 @@ def load_config():
     else:
         load_dotenv()
 
-    missing = []
     session = os.getenv("LEETCODE_SESSION")
     csrf = os.getenv("LEETCODE_CSRF")
-    repo_path = os.getenv("GITHUB_REPO_PATH")
     username = os.getenv("LEETCODE_USERNAME", "")
 
-    if not session:
-        missing.append("LEETCODE_SESSION")
-    if not csrf:
-        missing.append("LEETCODE_CSRF")
-    if not repo_path:
-        missing.append("GITHUB_REPO_PATH")
-
-    if missing:
-        print("Missing required config in ~/.leetcode-save.env:")
-        for key in missing:
-            print(f"  {key}=...")
-        if "LEETCODE_SESSION" in missing or "LEETCODE_CSRF" in missing:
-            print("\nTo log in, run:  leetcode-save --login")
+    if not session or not csrf:
+        print("You're not logged in yet.")
+        print("")
+        print("Run:  leetcode-save --login")
         sys.exit(1)
 
-    repo = Path(repo_path).expanduser()
-    if not repo.exists():
-        print(f"Repo path not found: {repo}")
-        print("Clone your GitHub repo there first.")
-        sys.exit(1)
+    repo = valid_repo_path(os.getenv("GITHUB_REPO_PATH"))
+    if not repo:
+        if not sys.stdin.isatty():
+            print("GITHUB_REPO_PATH is not set to a git repo.")
+            print("Run:  leetcode-save --login")
+            sys.exit(1)
+        prompt_repo_path()
+        load_dotenv(CONFIG_PATH, override=True)
+        repo = valid_repo_path(os.getenv("GITHUB_REPO_PATH"))
 
     return {
         "session": session,
