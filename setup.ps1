@@ -80,8 +80,11 @@ $BinDir = Join-Path $env:LOCALAPPDATA "leetcode-save\bin"
 New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
 
 # A .cmd shim is the portable way to expose a Python script as a command.
+# Written in the console's OEM codepage, not ASCII: a non-ASCII character in
+# the username (and so in these paths) would otherwise be mangled.
 $Shim = Join-Path $BinDir "leetcode-save.cmd"
-"@echo off`r`n`"$Python`" `"$Script`" %*" | Set-Content -Path $Shim -Encoding ASCII
+$ShimBody = "@echo off`r`n`"$Python`" `"$Script`" %*`r`n"
+[System.IO.File]::WriteAllText($Shim, $ShimBody, [System.Text.Encoding]::Default)
 Write-Host "  installed at $Shim"
 Write-Host ""
 

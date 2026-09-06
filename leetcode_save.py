@@ -87,7 +87,11 @@ CONFIG_PATH = Path.home() / ".leetcode-save.env"
 
 def write_config_values(updates):
     """Update keys in the config file, leaving every other line untouched."""
-    lines = CONFIG_PATH.read_text().splitlines() if CONFIG_PATH.exists() else []
+    lines = (
+        CONFIG_PATH.read_text(encoding="utf-8").splitlines()
+        if CONFIG_PATH.exists()
+        else []
+    )
     remaining = dict(updates)
 
     out = []
@@ -101,7 +105,7 @@ def write_config_values(updates):
     for key, value in remaining.items():
         out.append(f"{key}={value}")
 
-    CONFIG_PATH.write_text("\n".join(out) + "\n")
+    CONFIG_PATH.write_text("\n".join(out) + "\n", encoding="utf-8", newline="\n")
     try:
         CONFIG_PATH.chmod(0o600)
     except OSError:
@@ -175,70 +179,102 @@ def read_clipboard():
     return ""
 
 
-def read_paste(idle=0.6, wait=300):
-    """Read a pasted blob from the terminal without needing Ctrl-D.
+class StdinReader:
+    """One reader thread for the whole process.
 
-    A paste arrives as a fast burst, so once input goes quiet for `idle`
-    seconds it is done. Reads on a daemon thread rather than via select(),
-    which on Windows only accepts sockets and would raise on stdin.
+    A thread blocked in sys.stdin cannot be cancelled, so a second reader
+    would race it and swallow whatever the user types next. Everything that
+    needs stdin goes through this single queue instead. Reading on a thread
+    rather than via select() also keeps Windows working, where select()
+    accepts only sockets.
     """
-    lines = queue.Queue()
 
-    def reader():
+    def __init__(self):
+        self._queue = queue.Queue()
+        self._started = False
+        self._done = False
+
+    def _start(self):
+        if self._started:
+            return
+        self._started = True
+
+        def reader():
+            try:
+                for line in sys.stdin:
+                    self._queue.put(line)
+            except Exception:
+                pass
+            self._queue.put(None)
+
+        threading.Thread(target=reader, daemon=True).start()
+
+    def line(self, timeout=None):
+        """Next line, or None if input ended or the wait ran out."""
+        if self._done:
+            return None
+        self._start()
         try:
-            for line in sys.stdin:
-                lines.put(line)
-        except Exception:
-            pass
-        lines.put(None)
-
-    threading.Thread(target=reader, daemon=True).start()
-
-    try:
-        first = lines.get(timeout=wait)
-    except queue.Empty:
-        return ""
-    if first is None:
-        return ""
-
-    chunks = [first]
-    while True:
-        try:
-            item = lines.get(timeout=idle)
+            item = self._queue.get(timeout=timeout)
         except queue.Empty:
-            break
+            return None
         if item is None:
-            break
-        chunks.append(item)
+            self._done = True
+            return None
+        return item.rstrip("\r\n")
 
-    return "".join(chunks)
+    def burst(self, idle=0.6, wait=300):
+        """Everything from one paste. Ends when input goes quiet."""
+        first = self.line(timeout=wait)
+        if first is None:
+            return ""
+        chunks = [first]
+        while True:
+            item = self.line(timeout=idle)
+            if item is None:
+                break
+            chunks.append(item)
+        return "\n".join(chunks)
+
+
+STDIN = StdinReader()
+
+
+def ask(prompt, timeout=300):
+    """Prompt for one line. Returns None if input ended or timed out."""
+    sys.stdout.write(prompt)
+    sys.stdout.flush()
+    answer = STDIN.line(timeout=timeout)
+    if answer is None:
+        print("")
+    return answer
 
 
 def sync_cookies(paste=False):
     """Set up cookies from a 'Copy as cURL' blob: pasted, piped, or on the clipboard."""
     found = None
 
-    if not sys.stdin.isatty():
-        found = extract_cookies(sys.stdin.read())
-    else:
-        if not paste:
-            found = extract_cookies(read_clipboard())
-            if found:
-                print("Found cookies on the clipboard.")
+    if not paste:
+        found = extract_cookies(read_clipboard())
+        if found:
+            print("Found your login on the clipboard.")
 
-        if not found:
-            print(copy_steps())
+    if not found:
+        # No isatty() check here: in Git Bash and other MSYS terminals stdin
+        # is a pipe, so trusting isatty() would skip the prompt and block
+        # silently. A burst read handles piped input and typing alike.
+        print(copy_steps())
+        print("")
+        print("Then come back here, paste it, and press Enter.")
+        print("It will look like a huge wall of text. That is expected.")
+        print("")
+        print("Waiting for your paste...")
+        print("")
+        try:
+            found = extract_cookies(STDIN.burst())
+        except KeyboardInterrupt:
             print("")
-            print("Then come back here, paste it, and press Enter.")
-            print("It will look like a huge wall of text. That is expected.")
-            print("")
-            print("Waiting for your paste...")
-            print("")
-            try:
-                found = extract_cookies(read_paste())
-            except KeyboardInterrupt:
-                print("")
-                sys.exit(1)
+            sys.exit(1)
 
     if not found:
         print("")
@@ -305,6 +341,11 @@ SEARCH_ROOTS = (
     "git",
     "GitHub",
     "github",
+    # Windows "Known Folder Move" relocates these into OneDrive, so the
+    # plain Desktop and Documents above may not exist at all.
+    "OneDrive",
+    "OneDrive/Desktop",
+    "OneDrive/Documents",
 )
 
 
@@ -356,22 +397,35 @@ def create_repo():
         return None
 
     print(f"I can create '{name}' on GitHub and clone it to {target}.")
-    try:
-        answer = input("Do that now? [Y/n]: ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        print("")
+    answer = ask("Do that now? [Y/n]: ")
+    if answer is None:
         return None
-    if answer in ("n", "no"):
+    if answer.strip().lower() in ("n", "no"):
         return None
 
-    result = subprocess.run(
-        ["gh", "repo", "create", name, "--public", "--clone"],
-        cwd=Path.home(),
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            ["gh", "repo", "create", name, "--public", "--clone"],
+            cwd=Path.home(),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        print(f"  Couldn't run gh: {e}")
+        return None
+
     if result.returncode != 0:
-        print(f"  gh failed: {result.stderr.strip().splitlines()[-1:] or ''}")
+        detail = (result.stderr or result.stdout).strip().splitlines()
+        print(f"  Couldn't create it: {detail[-1] if detail else 'gh gave no reason'}")
+        print("  You can create one yourself and point me at it instead.")
+        return None
+
+    if not (target / ".git").is_dir():
+        print(f"  gh reported success but {target} isn't there.")
+        print("  Point me at the clone yourself instead.")
         return None
 
     # A brand new repo has no commits, so give it one and set upstream.
@@ -379,6 +433,7 @@ def create_repo():
         "# LeetCode Solutions\n\nSaved with "
         "[leetcode-save](https://github.com/yashwanthgh/leetcode-save).\n",
         encoding="utf-8",
+        newline="\n",
     )
     git(target, "add", "README.md")
     git(target, "commit", "-m", "Add README")
@@ -391,11 +446,10 @@ def create_repo():
 
 def ask_for_path():
     for _ in range(3):
-        try:
-            answer = input("Path to your solutions repo: ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print("")
-            sys.exit(1)
+        answer = ask("Path to your solutions repo: ")
+        if answer is None:
+            return None
+        answer = answer.strip().strip('"').strip("'")
         if not answer:
             continue
         repo = Path(answer).expanduser()
@@ -403,7 +457,7 @@ def ask_for_path():
             print(f"  No such folder: {repo}")
             continue
         if not (repo / ".git").is_dir():
-            print(f"  {repo} isn't a git repo — clone it from GitHub first.")
+            print(f"  {repo} isn't a git repo - clone it from GitHub first.")
             continue
         return repo
     return None
@@ -433,11 +487,10 @@ def resolve_repo_path(interactive=True):
         print("")
         repo = None
         for _ in range(3):
-            try:
-                pick = input(f"Which one? [1-{len(candidates)}]: ").strip()
-            except (EOFError, KeyboardInterrupt):
-                print("")
-                sys.exit(1)
+            pick = ask(f"Which one? [1-{len(candidates)}]: ")
+            if pick is None:
+                return None
+            pick = pick.strip()
             if pick.isdigit() and 1 <= int(pick) <= len(candidates):
                 repo = candidates[int(pick) - 1]
                 break
@@ -564,7 +617,7 @@ def fetch_submission_id(slug, lang_key, headers):
         GRAPHQL_URL,
         json={
             "query": query,
-            "variables": {"questionSlug": slug, "offset": 0, "limit": 20},
+            "variables": {"questionSlug": slug, "offset": 0, "limit": 100},
         },
         headers=headers,
         timeout=15,
@@ -616,7 +669,7 @@ def fetch_submission_code(submission_id, headers):
     return details
 
 
-def fetch_recent_accepted(lang_key, headers, scan=25):
+def fetch_recent_accepted(lang_key, headers, scan=100):
     """Most recent accepted submission in a language, across all problems.
 
     Uses the authenticated submissionList rather than recentAcSubmissionList,
@@ -666,7 +719,7 @@ def html_to_plaintext(html_content):
     h.ignore_emphasis = True
 
     text = h.handle(html_content)
-    text = text.replace(" ", " ")
+    text = text.replace("\u00a0", " ")  # nbsp
     text = re.sub(r"[ \t]+\n", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
@@ -726,11 +779,11 @@ def save_to_repo(problem, submission_details, repo_path, lang_key, version=False
     base = repo_path / f"{num}-{slug}.{ext}"
 
     if not base.exists():
-        base.write_text(content, encoding="utf-8")
+        base.write_text(content, encoding="utf-8", newline="\n")
         return base.name, "new"
 
     if not version:
-        base.write_text(content, encoding="utf-8")
+        base.write_text(content, encoding="utf-8", newline="\n")
         return base.name, "updated"
 
     # Runtime and memory differ between runs, so compare only the code itself.
@@ -743,16 +796,46 @@ def save_to_repo(problem, submission_details, repo_path, lang_key, version=False
     while (repo_path / f"{num}.{n}-{slug}.{ext}").exists():
         n += 1
     versioned = repo_path / f"{num}.{n}-{slug}.{ext}"
-    versioned.write_text(content, encoding="utf-8")
+    versioned.write_text(content, encoding="utf-8", newline="\n")
     return versioned.name, "versioned"
 
 
-def git(repo_path, *cmd, check=True):
-    result = subprocess.run(
-        ["git", *cmd], cwd=repo_path, capture_output=True, text=True
-    )
+def require_git():
+    if not shutil.which("git"):
+        print("git isn't installed, or isn't on your PATH.")
+        print("Your solutions are stored in a git repo, so it's required.")
+        if platform.system() == "Windows":
+            print("Get it from https://git-scm.com/download/win")
+        elif platform.system() == "Darwin":
+            print("Install it with:  xcode-select --install")
+        else:
+            print("Install it with your package manager, e.g. apt install git")
+        sys.exit(1)
+
+
+def git(repo_path, *cmd, check=True, timeout=120):
+    try:
+        result = subprocess.run(
+            ["git", *cmd],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+        )
+    except FileNotFoundError:
+        require_git()
+    except subprocess.TimeoutExpired:
+        # capture_output swallows any credential or passphrase prompt, so a
+        # hung command looks like a freeze with no explanation.
+        print(f"git {cmd[0]} timed out after {timeout}s.")
+        print("If it was waiting for a password, set up credential caching")
+        print("or an SSH key, then try again.")
+        sys.exit(1)
+
     if check and result.returncode != 0:
-        print(f"git error: {result.stderr.strip()}")
+        print(f"git {cmd[0]} failed: {result.stderr.strip() or 'no output'}")
         sys.exit(1)
     return result.stdout.strip()
 
@@ -773,9 +856,20 @@ def remote_url(repo_path):
 def git_commit(repo_path, filename, problem_title):
     """Stage and commit one file. Returns False if it produced no change."""
     git(repo_path, "add", "--", filename)
-    if not git(repo_path, "status", "--porcelain"):
+
+    # Scoped to this file on purpose: a repo-wide status would also see
+    # unrelated stray files like .DS_Store and report a change that isn't
+    # staged, making the commit below fail and abort a whole backfill.
+    unchanged = subprocess.run(
+        ["git", "diff", "--cached", "--quiet", "--", filename],
+        cwd=repo_path,
+        capture_output=True,
+    ).returncode == 0
+    if unchanged:
         return False
-    git(repo_path, "commit", "-m", f"solve: {problem_title}")
+
+    # Pathspec form so only this file is committed, whatever else is lying around.
+    git(repo_path, "commit", "-m", f"solve: {problem_title}", "--", filename)
     return True
 
 
@@ -792,7 +886,7 @@ def existing_solutions(repo_path):
     return found
 
 
-def iter_submissions(headers, page=20, max_pages=50):
+def iter_submissions(headers, page=20, max_pages=250):
     """Walk your submission history, newest first."""
     query = """
     query submissionList($offset: Int!, $limit: Int!) {
@@ -867,14 +961,14 @@ def sync_all(config, headers, no_push, lang_filter=None):
             print(f"  + {filename}")
         except (requests.RequestException, KeyError) as e:
             failed.append(f"{slug} ({type(e).__name__})")
-            print(f"  ! {slug} — skipped: {e}")
+            print(f"  ! {slug} - skipped: {e}")
 
         time.sleep(0.4)
 
     print("")
     if failed:
         print(f"Couldn't save {len(failed)}: {', '.join(failed)}")
-        print("Those are usually temporary — try again in a minute.")
+        print("Those are usually temporary - try again in a minute.")
         print("")
 
     if not saved:
@@ -946,6 +1040,8 @@ alone, so it is safe to re-run and doubles as a first-time backfill.
     )
     args = parser.parse_args()
 
+    require_git()
+
     if args.login or args.sync_cookies:
         sync_cookies(paste=args.login)
         return
@@ -968,13 +1064,13 @@ alone, so it is safe to re-run and doubles as a first-time backfill.
             print(f"Tip: pass a slug directly, or try --lang <other language>.")
             sys.exit(1)
         slug, sub_id = recent["titleSlug"], recent["id"]
-        print(f"  → {recent['title']}")
+        print(f"  -> {recent['title']}")
     else:
         slug, sub_id = args.slug, None
 
     print(f"Fetching problem: {slug}")
     problem = fetch_problem(slug, headers)
-    print(f"  → #{problem['questionFrontendId']} {problem['title']} ({problem['difficulty']})")
+    print(f"  -> #{problem['questionFrontendId']} {problem['title']} ({problem['difficulty']})")
 
     if sub_id is None:
         print(f"Looking for your accepted {lang_key} submission...")
@@ -986,7 +1082,7 @@ alone, so it is safe to re-run and doubles as a first-time backfill.
 
     submission = fetch_submission_code(sub_id, headers)
     print(
-        f"  → Runtime: {submission.get('runtimeDisplay', 'N/A')}"
+        f"  -> Runtime: {submission.get('runtimeDisplay', 'N/A')}"
         f"  Memory: {submission.get('memoryDisplay', 'N/A')}"
     )
 
@@ -996,7 +1092,7 @@ alone, so it is safe to re-run and doubles as a first-time backfill.
     )
 
     if outcome == "duplicate":
-        print(f"Already saved as {filename} with identical code — nothing to do.")
+        print(f"Already saved as {filename} with identical code - nothing to do.")
         return
 
     if outcome == "versioned":
@@ -1014,7 +1110,7 @@ alone, so it is safe to re-run and doubles as a first-time backfill.
         git(repo, "push")
         print("Pushed to GitHub.")
 
-    print(f"\nDone! ✓  #{problem['questionFrontendId']} {problem['title']}")
+    print(f"\nDone! #{problem['questionFrontendId']} {problem['title']}")
 
 
 if __name__ == "__main__":
