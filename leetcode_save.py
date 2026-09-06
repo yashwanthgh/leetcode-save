@@ -6,6 +6,7 @@ import re
 import sys
 import json
 import time
+import shutil
 import select
 import warnings
 import subprocess
@@ -202,7 +203,7 @@ def sync_cookies(paste=False):
     print(f"Signed in as '{user}'.")
 
     if not valid_repo_path(os.getenv("GITHUB_REPO_PATH")):
-        prompt_repo_path()
+        resolve_repo_path()
 
     print("")
     print("Ready. Now just run:  leetcode-save")
@@ -215,25 +216,113 @@ def valid_repo_path(raw):
     return p if (p / ".git").is_dir() else None
 
 
-def prompt_repo_path():
-    """Ask where the solutions repo lives, rather than making them edit a file."""
-    print("")
-    print("Where should your solutions be saved?")
-    print("This must be a folder you cloned from GitHub. If you don't have one yet,")
-    print("open another terminal and run:")
-    print("    gh repo create leetcode-solutions --public --clone")
-    print("")
+SEARCH_ROOTS = (
+    "",
+    "Desktop",
+    "Documents",
+    "code",
+    "Code",
+    "Projects",
+    "projects",
+    "repos",
+    "dev",
+    "src",
+    "git",
+    "GitHub",
+    "github",
+)
 
+
+def find_repo_candidates():
+    """Look for an already-cloned solutions repo in the usual places."""
+    found, seen = [], set()
+
+    def consider(p):
+        try:
+            rp = p.resolve()
+        except OSError:
+            return
+        if rp in seen:
+            return
+        seen.add(rp)
+        if not (rp / ".git").is_dir():
+            return
+        # Don't offer this tool's own checkout as a place to store solutions.
+        if (rp / "leetcode_save.py").exists():
+            return
+        if "leetcode" not in rp.name.lower().replace("-", "").replace("_", "").replace(" ", ""):
+            return
+        found.append(rp)
+
+    consider(Path.cwd())
+    for name in SEARCH_ROOTS:
+        root = Path.home() / name if name else Path.home()
+        try:
+            children = list(root.iterdir())
+        except OSError:
+            continue
+        for c in children:
+            try:
+                if c.is_dir():
+                    consider(c)
+            except OSError:
+                continue
+
+    return found
+
+
+def create_repo():
+    """Offer to make the solutions repo, since gh can do it in one shot."""
+    name = "leetcode-solutions"
+    target = Path.home() / name
+
+    if not shutil.which("gh"):
+        print("GitHub CLI ('gh') isn't installed, so I can't create the repo for you.")
+        return None
+
+    print(f"I can create '{name}' on GitHub and clone it to {target}.")
+    try:
+        answer = input("Do that now? [Y/n]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print("")
+        return None
+    if answer in ("n", "no"):
+        return None
+
+    result = subprocess.run(
+        ["gh", "repo", "create", name, "--public", "--clone"],
+        cwd=Path.home(),
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print(f"  gh failed: {result.stderr.strip().splitlines()[-1:] or ''}")
+        return None
+
+    # A brand new repo has no commits, so give it one and set upstream.
+    (target / "README.md").write_text(
+        "# LeetCode Solutions\n\nSaved with "
+        "[leetcode-save](https://github.com/yashwanthgh/leetcode-save).\n",
+        encoding="utf-8",
+    )
+    git(target, "add", "README.md")
+    git(target, "commit", "-m", "Add README")
+    git(target, "branch", "-M", "main")
+    git(target, "push", "-u", "origin", "main")
+
+    print(f"  Created and cloned to {target}")
+    return target
+
+
+def ask_for_path():
     for _ in range(3):
         try:
             answer = input("Path to your solutions repo: ").strip()
         except (EOFError, KeyboardInterrupt):
             print("")
             sys.exit(1)
-
         if not answer:
             continue
-
         repo = Path(answer).expanduser()
         if not repo.is_dir():
             print(f"  No such folder: {repo}")
@@ -241,13 +330,55 @@ def prompt_repo_path():
         if not (repo / ".git").is_dir():
             print(f"  {repo} isn't a git repo — clone it from GitHub first.")
             continue
+        return repo
+    return None
 
+
+def resolve_repo_path(interactive=True):
+    """Work out where solutions go, asking as little as possible.
+
+    A single obvious candidate needs no input at all, so this works even
+    when there is no terminal to prompt on.
+    """
+    candidates = find_repo_candidates()
+
+    if len(candidates) == 1:
+        repo = candidates[0]
+        print(f"Using solutions repo: {repo}")
         write_config_values({"GITHUB_REPO_PATH": str(repo)})
-        print(f"  Saved: {repo}")
-        return
+        return repo
 
-    print("Giving up. Re-run: leetcode-save --login")
-    sys.exit(1)
+    if not interactive:
+        return None
+
+    if len(candidates) > 1:
+        print("Found more than one repo that could hold your solutions:")
+        for i, c in enumerate(candidates, 1):
+            print(f"  {i}. {c}")
+        print("")
+        repo = None
+        for _ in range(3):
+            try:
+                pick = input(f"Which one? [1-{len(candidates)}]: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("")
+                sys.exit(1)
+            if pick.isdigit() and 1 <= int(pick) <= len(candidates):
+                repo = candidates[int(pick) - 1]
+                break
+            print("  Enter one of the numbers above.")
+        if repo is None:
+            sys.exit(1)
+    else:
+        print("")
+        print("You don't seem to have a repo for your solutions yet.")
+        repo = create_repo() or ask_for_path()
+        if repo is None:
+            print("Giving up. Re-run: leetcode-save --login")
+            sys.exit(1)
+
+    write_config_values({"GITHUB_REPO_PATH": str(repo)})
+    return repo
 
 
 def load_config():
@@ -269,13 +400,11 @@ def load_config():
 
     repo = valid_repo_path(os.getenv("GITHUB_REPO_PATH"))
     if not repo:
-        if not sys.stdin.isatty():
-            print("GITHUB_REPO_PATH is not set to a git repo.")
-            print("Run:  leetcode-save --login")
-            sys.exit(1)
-        prompt_repo_path()
-        load_dotenv(CONFIG_PATH, override=True)
-        repo = valid_repo_path(os.getenv("GITHUB_REPO_PATH"))
+        repo = resolve_repo_path(interactive=sys.stdin.isatty())
+    if not repo:
+        print("Couldn't work out where to save your solutions.")
+        print("Run:  leetcode-save --login")
+        sys.exit(1)
 
     return {
         "session": session,

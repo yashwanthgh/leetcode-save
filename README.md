@@ -77,21 +77,7 @@ isn't on your `PATH`. Requires Python 3.8+ and `git`.
 
 ## Setup
 
-**1. Create a repo for your solutions** and clone it somewhere:
-
-```bash
-gh repo create leetcode-solutions --public --clone
-```
-
-**2. Create the config file:**
-
-```bash
-cp .env.example ~/.leetcode-save.env
-```
-
-**3. Set `GITHUB_REPO_PATH`** in `~/.leetcode-save.env` to wherever you cloned that repo.
-
-**4. Log in.** Reading your own submissions needs your session cookie, but you never have
+Just log in. Reading your own submissions needs your session cookie, but you never have
 to go hunting for it in the cookie table. Run:
 
 ```bash
@@ -106,10 +92,15 @@ It prints instructions and waits. Then, in Chrome on **leetcode.com while logged
 4. Paste it into the terminal and press **Enter**
 
 That's the whole login. It pulls both cookies out of the pasted command, checks them
-against LeetCode, fills in your username, and writes `~/.leetcode-save.env` with
-`chmod 600`. No `Ctrl-D`, no picking values out of a table.
+against LeetCode, and fills in your username. No `Ctrl-D`, no picking values out of a
+table.
 
-Run it again whenever your session expires — the tool tells you when that happens.
+It then works out where to put your solutions: if you already have a clone whose name
+looks like a LeetCode repo, it uses it; if you have several, it asks which; and if you
+have none, it offers to create one on GitHub and clone it for you. Everything lands in
+`~/.leetcode-save.env` with `chmod 600` — you never edit that file yourself.
+
+Run `--login` again whenever your session expires. The tool tells you when that happens.
 
 > Your cookies stay on your machine and are only ever sent to `leetcode.com`. Treat them
 > like a password: they grant access to your LeetCode account. `.gitignore` blocks every
