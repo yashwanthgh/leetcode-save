@@ -6,6 +6,7 @@ import re
 import sys
 import json
 import time
+import select
 import warnings
 import subprocess
 import argparse
@@ -115,11 +116,11 @@ def whoami(session, csrf):
     return status.get("username") if status.get("isSignedIn") else None
 
 
-COPY_STEPS = """Do this in Chrome:
-  1. Open leetcode.com (logged in)
-  2. DevTools -> Network tab, then reload the page
-  3. Right-click the top request -> Copy -> Copy as cURL
-  4. Run: leetcode-save --sync-cookies   (or paste it straight in)"""
+COPY_STEPS = """In Chrome, on leetcode.com and logged in:
+  1. Press Cmd+Option+I (or F12) to open DevTools
+  2. Click the Network tab
+  3. Reload the page
+  4. Right-click the top request -> Copy -> Copy as cURL"""
 
 
 def extract_cookies(raw):
@@ -130,33 +131,57 @@ def extract_cookies(raw):
     return None
 
 
-def sync_cookies():
-    """Read LeetCode cookies from piped stdin, the clipboard, or an interactive paste."""
+def read_paste(idle=0.5, wait=300):
+    """Read a pasted blob from the terminal without needing Ctrl-D.
+
+    A paste arrives as a fast burst, so once input goes quiet for `idle`
+    seconds it is done. Everything is consumed, so no leftover lines spill
+    into the shell after this returns.
+    """
+    if not select.select([sys.stdin], [], [], wait)[0]:
+        return ""
+
+    chunks = []
+    while True:
+        if not select.select([sys.stdin], [], [], idle)[0]:
+            break
+        data = os.read(sys.stdin.fileno(), 65536)
+        if not data:
+            break
+        chunks.append(data.decode("utf-8", errors="replace"))
+
+    return "".join(chunks)
+
+
+def sync_cookies(paste=False):
+    """Set up cookies from a 'Copy as cURL' blob: pasted, piped, or on the clipboard."""
     found = None
 
     if not sys.stdin.isatty():
         found = extract_cookies(sys.stdin.read())
     else:
-        clip = subprocess.run(["pbpaste"], capture_output=True, text=True).stdout
-        found = extract_cookies(clip)
-        if found:
-            print("Found cookies on the clipboard.")
-        else:
-            print("No LeetCode cookies on the clipboard.")
-            print("")
+        if not paste:
+            clip = subprocess.run(["pbpaste"], capture_output=True, text=True).stdout
+            found = extract_cookies(clip)
+            if found:
+                print("Found cookies on the clipboard.")
+
+        if not found:
             print(COPY_STEPS)
             print("")
-            print("Or paste the curl command here, then press Ctrl-D:")
+            print("Paste it here and press Enter:")
+            print("")
             try:
-                found = extract_cookies(sys.stdin.read())
+                found = extract_cookies(read_paste())
             except KeyboardInterrupt:
                 print("")
                 sys.exit(1)
 
     if not found:
-        print("Couldn't find LEETCODE_SESSION and csrftoken in that input.")
         print("")
-        print(COPY_STEPS)
+        print("Didn't see LEETCODE_SESSION and csrftoken in that.")
+        print("Make sure you used 'Copy as cURL' on a leetcode.com request")
+        print("while logged in, and that you pressed Enter after pasting.")
         sys.exit(1)
 
     session, csrf = found
@@ -605,7 +630,7 @@ def main():
         epilog="""
 Examples:
   leetcode-save                      # save everything new, skip what's already saved
-  leetcode-save --sync-cookies       # set up / refresh your LeetCode cookies
+  leetcode-save --login              # log in: paste a Copy-as-cURL blob
   leetcode-save two-sum              # save one problem by slug
   leetcode-save --latest             # save just your most recent accepted problem
   leetcode-save --no-push            # commit locally without pushing
@@ -622,9 +647,14 @@ alone, so it is safe to re-run and doubles as a first-time backfill.
     )
     parser.add_argument("slug", nargs="?", help="Problem slug, e.g. two-sum")
     parser.add_argument(
+        "--login",
+        action="store_true",
+        help="Log in: paste a 'Copy as cURL' blob when prompted",
+    )
+    parser.add_argument(
         "--sync-cookies",
         action="store_true",
-        help="Set up cookies from a 'Copy as cURL' blob (clipboard, pipe, or paste)",
+        help="Same as --login, but checks the clipboard first",
     )
     parser.add_argument(
         "--latest", action="store_true", help="Save only your most recent accepted submission"
@@ -639,8 +669,8 @@ alone, so it is safe to re-run and doubles as a first-time backfill.
     )
     args = parser.parse_args()
 
-    if args.sync_cookies:
-        sync_cookies()
+    if args.login or args.sync_cookies:
+        sync_cookies(paste=args.login)
         return
 
     config = load_config()

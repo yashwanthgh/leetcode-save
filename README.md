@@ -91,23 +91,25 @@ cp .env.example ~/.leetcode-save.env
 
 **3. Set `GITHUB_REPO_PATH`** in `~/.leetcode-save.env` to wherever you cloned that repo.
 
-**4. Grab your LeetCode cookies.** Reading your own submissions needs your session
-cookie, but you don't have to go digging for it:
-
-1. Open [leetcode.com](https://leetcode.com) in Chrome, **logged in**
-2. DevTools (`Cmd+Option+I` / `F12`) → **Network** tab → reload the page
-3. Right-click the top request → **Copy** → **Copy as cURL**
-4. Run:
+**4. Log in.** Reading your own submissions needs your session cookie, but you never have
+to go hunting for it in the cookie table. Run:
 
 ```bash
-leetcode-save --sync-cookies
+leetcode-save --login
 ```
 
-That pulls both cookies off your clipboard, verifies them against LeetCode, fills in your
-username automatically, and writes everything to `~/.leetcode-save.env` with `chmod 600`.
+It prints instructions and waits. Then, in Chrome on **leetcode.com while logged in**:
 
-Run the same command again whenever your session expires — the tool tells you when that
-happens.
+1. Press `Cmd+Option+I` (or `F12`) → click the **Network** tab
+2. Reload the page
+3. Right-click the top request → **Copy** → **Copy as cURL**
+4. Paste it into the terminal and press **Enter**
+
+That's the whole login. It pulls both cookies out of the pasted command, checks them
+against LeetCode, fills in your username, and writes `~/.leetcode-save.env` with
+`chmod 600`. No `Ctrl-D`, no picking values out of a table.
+
+Run it again whenever your session expires — the tool tells you when that happens.
 
 > Your cookies stay on your machine and are only ever sent to `leetcode.com`. Treat them
 > like a password: they grant access to your LeetCode account. `.gitignore` blocks every
