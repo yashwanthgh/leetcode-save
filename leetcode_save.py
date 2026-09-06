@@ -123,11 +123,21 @@ def whoami(session, csrf):
     return status.get("username") if status.get("isSignedIn") else None
 
 
-COPY_STEPS = """In Chrome, on leetcode.com and logged in:
-  1. Press Cmd+Option+I (or F12) to open DevTools
-  2. Click the Network tab
-  3. Reload the page
-  4. Right-click the top request -> Copy -> Copy as cURL"""
+def copy_steps():
+    devtools = "Cmd+Option+I" if platform.system() == "Darwin" else "F12"
+    reload_key = "Cmd+R" if platform.system() == "Darwin" else "Ctrl+R"
+    return f"""To log in, this needs one thing out of your browser.
+
+In your browser, go to leetcode.com and make sure you are logged in. Then:
+
+  1. Press {devtools} to open the developer tools
+  2. Click the "Network" tab along the top
+  3. Reload the page ({reload_key}) -- a list of requests appears
+  4. Right-click the first request in that list
+  5. Choose  Copy  ->  Copy as cURL
+
+Nothing is shown to you at that point; it just goes on your clipboard.
+Chrome, Edge and Firefox all have this."""
 
 
 def extract_cookies(raw):
@@ -217,9 +227,12 @@ def sync_cookies(paste=False):
                 print("Found cookies on the clipboard.")
 
         if not found:
-            print(COPY_STEPS)
+            print(copy_steps())
             print("")
-            print("Paste it here and press Enter:")
+            print("Then come back here, paste it, and press Enter.")
+            print("It will look like a huge wall of text. That is expected.")
+            print("")
+            print("Waiting for your paste...")
             print("")
             try:
                 found = extract_cookies(read_paste())
@@ -229,17 +242,25 @@ def sync_cookies(paste=False):
 
     if not found:
         print("")
-        print("Didn't see LEETCODE_SESSION and csrftoken in that.")
-        print("Make sure you used 'Copy as cURL' on a leetcode.com request")
-        print("while logged in, and that you pressed Enter after pasting.")
+        print("That paste didn't contain a LeetCode login.")
+        print("")
+        print("Two things to check:")
+        print("  - You were logged in to leetcode.com when you copied it")
+        print("  - You picked a request from leetcode.com, not from another site")
+        print("")
+        print("Try again with:  leetcode-save --login")
         sys.exit(1)
 
     session, csrf = found
 
-    print("Found both cookies. Checking them with LeetCode...")
+    print("Got it. Checking with LeetCode...")
     user = whoami(session, csrf)
     if not user:
-        print("LeetCode rejected those cookies — are you logged in in that browser?")
+        print("")
+        print("LeetCode didn't accept that login.")
+        print("It's usually because you weren't signed in in that browser,")
+        print("or the copied request was already expired. Log in at")
+        print("leetcode.com, then try again with:  leetcode-save --login")
         sys.exit(1)
 
     write_config_values(
@@ -255,7 +276,12 @@ def sync_cookies(paste=False):
         resolve_repo_path()
 
     print("")
-    print("Ready. Now just run:  leetcode-save")
+    print("You're all set. From now on, after you solve a problem:")
+    print("")
+    print("    leetcode-save")
+    print("")
+    print("That's the only command you need. This login lasts a few weeks;")
+    print("when it runs out the tool will tell you to run --login again.")
 
 
 def valid_repo_path(raw):
@@ -474,10 +500,14 @@ def make_headers(config):
 
 
 def auth_failed():
-    print("LeetCode rejected your session cookie — they expire periodically.")
-    print("To refresh: on leetcode.com open DevTools -> Network, reload the page,")
-    print("right-click the top request -> Copy -> Copy as cURL, then run:")
-    print("  leetcode-save --login")
+    print("")
+    print("Your LeetCode login has expired. This happens every few weeks.")
+    print("")
+    print("To fix it, run:")
+    print("")
+    print("    leetcode-save --login")
+    print("")
+    print("It will walk you through it. Nothing you've saved is affected.")
     sys.exit(1)
 
 
@@ -727,6 +757,19 @@ def git(repo_path, *cmd, check=True):
     return result.stdout.strip()
 
 
+def remote_url(repo_path):
+    """Browsable URL for the repo's origin, if it has a recognisable one."""
+    url = git(repo_path, "remote", "get-url", "origin", check=False)
+    if not url:
+        return None
+    url = url.strip()
+    if url.startswith("git@"):
+        # git@github.com:user/repo.git -> https://github.com/user/repo
+        host, _, path = url[4:].partition(":")
+        url = f"https://{host}/{path}"
+    return url[:-4] if url.endswith(".git") else url
+
+
 def git_commit(repo_path, filename, problem_title):
     """Stage and commit one file. Returns False if it produced no change."""
     git(repo_path, "add", "--", filename)
@@ -788,7 +831,10 @@ def sync_all(config, headers, no_push, lang_filter=None):
     """Save every accepted solution that isn't in the repo yet."""
     repo = config["repo_path"]
     have = existing_solutions(repo)
-    print(f"Repo has {len(have)} solution(s) saved. Scanning your history...")
+    print(f"Saving to: {repo}")
+    print(f"Already there: {len(have)} solution(s)")
+    print("")
+    print("Checking LeetCode for anything new...")
 
     seen = set()
     saved, skipped, failed = [], 0, []
@@ -826,19 +872,32 @@ def sync_all(config, headers, no_push, lang_filter=None):
         time.sleep(0.4)
 
     print("")
-    print(f"Saved {len(saved)} new, left {skipped} untouched.")
     if failed:
-        print(f"Failed on {len(failed)}: {', '.join(failed)}")
+        print(f"Couldn't save {len(failed)}: {', '.join(failed)}")
+        print("Those are usually temporary — try again in a minute.")
+        print("")
 
     if not saved:
-        print("Nothing new to push.")
+        print(f"Nothing new to save. All {skipped} of your solutions are")
+        print("already in the repo, and none of them were touched.")
         return
 
+    print(f"Saved {len(saved)} new solution(s). Left the other {skipped} alone.")
+
     if no_push:
-        print("Committed locally (--no-push).")
-    else:
-        git(repo, "push")
-        print("Pushed to GitHub.")
+        print("")
+        print("Committed on this computer only, because you passed --no-push.")
+        print("Run 'leetcode-save' again without it to upload them.")
+        return
+
+    print("Uploading to GitHub...")
+    git(repo, "push")
+    print("Done.")
+
+    url = remote_url(repo)
+    if url:
+        print("")
+        print(f"See them at {url}")
 
 
 def main():
