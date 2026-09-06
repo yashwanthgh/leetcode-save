@@ -287,26 +287,44 @@ def fetch_submission_code(submission_id, headers):
     return details
 
 
-def fetch_recent_accepted(username, headers):
+def fetch_recent_accepted(lang_key, headers, scan=25):
+    """Most recent accepted submission in a language, across all problems.
+
+    Uses the authenticated submissionList rather than recentAcSubmissionList,
+    which returns an empty array even for accounts with solved problems.
+    """
     query = """
-    query recentAcSubmissions($username: String!, $limit: Int!) {
-      recentAcSubmissionList(username: $username, limit: $limit) {
-        id
-        title
-        titleSlug
-        timestamp
+    query submissionList($offset: Int!, $limit: Int!) {
+      submissionList(offset: $offset, limit: $limit) {
+        submissions {
+          id
+          title
+          titleSlug
+          statusDisplay
+          lang
+        }
       }
     }
     """
     resp = requests.post(
         GRAPHQL_URL,
-        json={"query": query, "variables": {"username": username, "limit": 5}},
+        json={"query": query, "variables": {"offset": 0, "limit": scan}},
         headers=headers,
         timeout=15,
     )
     resp.raise_for_status()
     data = resp.json()
-    return (data.get("data") or {}).get("recentAcSubmissionList") or []
+
+    listing = (data.get("data") or {}).get("submissionList") or {}
+    submissions = listing.get("submissions")
+    if submissions is None:
+        auth_failed()
+
+    for sub in submissions:
+        if sub["statusDisplay"] == "Accepted" and sub["lang"].lower() == lang_key.lower():
+            return sub
+
+    return None
 
 
 def html_to_plaintext(html_content):
@@ -443,31 +461,31 @@ First-time setup:
     config = load_config()
     headers = make_headers(config)
 
+    lang_key = args.lang.lower()
+
     if args.latest:
-        if not config["username"]:
-            print("Set LEETCODE_USERNAME in ~/.leetcode-save.env to use --latest")
-            sys.exit(1)
-        print("Fetching your most recent accepted submission...")
-        recent = fetch_recent_accepted(config["username"], headers)
+        print(f"Finding your most recent accepted {lang_key} submission...")
+        recent = fetch_recent_accepted(lang_key, headers)
         if not recent:
-            print("No recent accepted submissions found.")
+            print(f"No accepted {lang_key} submission in your recent history.")
+            print(f"Tip: pass a slug directly, or try --lang <other language>.")
             sys.exit(1)
-        slug = recent[0]["titleSlug"]
-        print(f"  → {recent[0]['title']}")
+        slug, sub_id = recent["titleSlug"], recent["id"]
+        print(f"  → {recent['title']}")
     else:
-        slug = args.slug
+        slug, sub_id = args.slug, None
 
     print(f"Fetching problem: {slug}")
     problem = fetch_problem(slug, headers)
     print(f"  → #{problem['questionFrontendId']} {problem['title']} ({problem['difficulty']})")
 
-    lang_key = args.lang.lower()
-    print(f"Looking for your accepted {lang_key} submission...")
-    sub_id = fetch_submission_id(slug, lang_key, headers)
-    if not sub_id:
-        print(f"No accepted {lang_key} submission found for '{slug}'.")
-        print("Tip: make sure you've submitted and it passed on leetcode.com")
-        sys.exit(1)
+    if sub_id is None:
+        print(f"Looking for your accepted {lang_key} submission...")
+        sub_id = fetch_submission_id(slug, lang_key, headers)
+        if not sub_id:
+            print(f"No accepted {lang_key} submission found for '{slug}'.")
+            print("Tip: make sure you've submitted and it passed on leetcode.com")
+            sys.exit(1)
 
     submission = fetch_submission_code(sub_id, headers)
     print(
