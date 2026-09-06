@@ -1003,10 +1003,21 @@ def folder_for_ext(ext):
     return SQL_FOLDER if ext.lower() == "sql" else CODE_FOLDER
 
 
+ROOT_BUCKET = "root"
+
+
 def iter_solution_files(repo_path):
-    """Every solution file, in the folders and loose in the root alike."""
-    roots = [repo_path, repo_path / CODE_FOLDER, repo_path / SQL_FOLDER]
-    for root in roots:
+    """Yield (path, slug, ext, bucket) for every solution file.
+
+    The bucket comes from which directory was being listed, never from
+    comparing paths afterwards.
+    """
+    roots = [
+        (ROOT_BUCKET, repo_path),
+        (CODE_FOLDER, repo_path / CODE_FOLDER),
+        (SQL_FOLDER, repo_path / SQL_FOLDER),
+    ]
+    for bucket, root in roots:
         try:
             entries = list(root.iterdir())
         except OSError:
@@ -1016,25 +1027,27 @@ def iter_solution_files(repo_path):
                 continue
             m = SOLUTION_FILE.match(f.name)
             if m:
-                yield f, m.group(1), m.group(2)
+                yield f, m.group(1), m.group(2), bucket
 
 
 def existing_solutions(repo_path):
     """(slug, extension) pairs already saved, read straight off the filenames."""
-    return {(slug, ext) for _, slug, ext in iter_solution_files(repo_path)}
+    return {(slug, ext) for _, slug, ext, _ in iter_solution_files(repo_path)}
 
 
 def layout_summary(repo_path):
     """' (code/ 27, sql/ 2)' - shows at a glance whether the split happened."""
-    counts = {CODE_FOLDER: 0, SQL_FOLDER: 0, "loose in root": 0}
-    for path, _, _ in iter_solution_files(repo_path):
-        name = path.parent.name if path.parent != repo_path else "loose in root"
-        if name not in counts:
-            name = "loose in root"
-        counts[name] += 1
+    counts = {CODE_FOLDER: 0, SQL_FOLDER: 0, ROOT_BUCKET: 0}
+    for _, _, _, bucket in iter_solution_files(repo_path):
+        counts[bucket] += 1
 
-    parts = [f"{k}/ {v}" if k != "loose in root" else f"{v} loose in root"
-             for k, v in counts.items() if v]
+    parts = []
+    for bucket in (CODE_FOLDER, SQL_FOLDER):
+        if counts[bucket]:
+            parts.append(f"{bucket}/ {counts[bucket]}")
+    if counts[ROOT_BUCKET]:
+        parts.append(f"{counts[ROOT_BUCKET]} still loose in the root")
+
     return f"  ({', '.join(parts)})" if parts else ""
 
 
