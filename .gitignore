@@ -1,0 +1,12 @@
+# Never commit real cookies
+.env
+.leetcode-save.env
+*.env
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.class
+.venv/
+venv/
