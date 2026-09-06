@@ -1024,17 +1024,40 @@ def existing_solutions(repo_path):
     return {(slug, ext) for _, slug, ext in iter_solution_files(repo_path)}
 
 
+def layout_summary(repo_path):
+    """' (code/ 27, sql/ 2)' - shows at a glance whether the split happened."""
+    counts = {CODE_FOLDER: 0, SQL_FOLDER: 0, "loose in root": 0}
+    for path, _, _ in iter_solution_files(repo_path):
+        name = path.parent.name if path.parent != repo_path else "loose in root"
+        if name not in counts:
+            name = "loose in root"
+        counts[name] += 1
+
+    parts = [f"{k}/ {v}" if k != "loose in root" else f"{v} loose in root"
+             for k, v in counts.items() if v]
+    return f"  ({', '.join(parts)})" if parts else ""
+
+
 def migrate_layout(repo_path):
     """Move solution files that predate the code/ and sql/ split.
 
     Uses 'git mv' so history follows the file. Returns how many moved.
     """
+    # Listed straight from the root rather than filtered out of a wider walk,
+    # so this never depends on two Path objects comparing equal.
+    try:
+        entries = sorted(repo_path.iterdir())
+    except OSError:
+        return 0
+
     moves = []
-    for f in list(iter_solution_files(repo_path)):
-        path, _, ext = f
-        if path.parent != repo_path:
+    for path in entries:
+        if not path.is_file():
             continue
-        dest = repo_path / folder_for_ext(ext) / path.name
+        m = SOLUTION_FILE.match(path.name)
+        if not m:
+            continue
+        dest = repo_path / folder_for_ext(m.group(2)) / path.name
         if dest.exists():
             continue
         moves.append((path, dest))
@@ -1102,7 +1125,7 @@ def sync_all(config, headers, no_push, lang_filter=None):
     migrate_layout(repo)
 
     have = existing_solutions(repo)
-    print(f"Already there: {len(have)} solution(s)")
+    print(f"Already there: {len(have)} solution(s){layout_summary(repo)}")
     print("")
     print("Checking LeetCode for anything new...")
 
