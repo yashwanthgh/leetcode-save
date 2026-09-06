@@ -44,8 +44,86 @@ LANG_MAP = {
 }
 
 
+CONFIG_PATH = Path.home() / ".leetcode-save.env"
+
+
+def write_config_values(updates):
+    """Update keys in the config file, leaving every other line untouched."""
+    lines = CONFIG_PATH.read_text().splitlines() if CONFIG_PATH.exists() else []
+    remaining = dict(updates)
+
+    out = []
+    for line in lines:
+        key = line.split("=", 1)[0].strip() if "=" in line else None
+        if key in remaining:
+            out.append(f"{key}={remaining.pop(key)}")
+        else:
+            out.append(line)
+
+    for key, value in remaining.items():
+        out.append(f"{key}={value}")
+
+    CONFIG_PATH.write_text("\n".join(out) + "\n")
+    CONFIG_PATH.chmod(0o600)
+
+
+def whoami(session, csrf):
+    """Confirm a cookie pair is valid and return the account it belongs to."""
+    headers = make_headers({"session": session, "csrf": csrf})
+    resp = requests.post(
+        GRAPHQL_URL,
+        json={"query": "query { userStatus { isSignedIn username } }"},
+        headers=headers,
+        timeout=15,
+    )
+    resp.raise_for_status()
+    status = ((resp.json().get("data") or {}).get("userStatus")) or {}
+    return status.get("username") if status.get("isSignedIn") else None
+
+
+def sync_cookies():
+    """Pull LeetCode cookies out of a 'Copy as cURL' blob sitting on the clipboard."""
+    clip = subprocess.run(["pbpaste"], capture_output=True, text=True).stdout
+
+    if not clip.strip():
+        print("Clipboard is empty. See --help for the copy step.")
+        sys.exit(1)
+
+    session = re.search(r"LEETCODE_SESSION=([^;'\"\s]+)", clip)
+    csrf = re.search(r"csrftoken=([^;'\"\s]+)", clip)
+
+    if not session or not csrf:
+        print("Couldn't find LeetCode cookies on the clipboard.")
+        print("")
+        print("Do this in Chrome:")
+        print("  1. Open leetcode.com (logged in)")
+        print("  2. DevTools -> Network tab, then reload the page")
+        print("  3. Click the top request, right-click it")
+        print("  4. Copy -> Copy as cURL")
+        print("  5. Re-run: leetcode-save --sync-cookies")
+        sys.exit(1)
+
+    session, csrf = session.group(1), csrf.group(1)
+
+    print("Found both cookies. Checking them with LeetCode...")
+    user = whoami(session, csrf)
+    if not user:
+        print("LeetCode rejected those cookies — are you logged in in that browser?")
+        sys.exit(1)
+
+    write_config_values(
+        {
+            "LEETCODE_SESSION": session,
+            "LEETCODE_CSRF": csrf,
+            "LEETCODE_USERNAME": user,
+        }
+    )
+    print(f"Signed in as '{user}'. Saved to {CONFIG_PATH}")
+    print("Ready — try: leetcode-save --latest")
+
+
 def load_config():
-    config_path = Path.home() / ".leetcode-save.env"
+    config_path = CONFIG_PATH
     if config_path.exists():
         load_dotenv(config_path)
     else:
@@ -68,7 +146,8 @@ def load_config():
         print("Missing required config in ~/.leetcode-save.env:")
         for key in missing:
             print(f"  {key}=...")
-        print("\nSee .env.example for setup instructions.")
+        if "LEETCODE_SESSION" in missing or "LEETCODE_CSRF" in missing:
+            print("\nFor the cookies, run:  leetcode-save --sync-cookies")
         sys.exit(1)
 
     repo = Path(repo_path).expanduser()
@@ -96,11 +175,10 @@ def make_headers(config):
 
 
 def auth_failed():
-    print("LeetCode rejected your session cookie.")
-    print("Cookies expire periodically — grab fresh ones:")
-    print("  1. Log in at leetcode.com")
-    print("  2. DevTools -> Application -> Cookies -> https://leetcode.com")
-    print("  3. Update LEETCODE_SESSION and LEETCODE_CSRF in ~/.leetcode-save.env")
+    print("LeetCode rejected your session cookie — they expire periodically.")
+    print("To refresh: on leetcode.com open DevTools -> Network, reload the page,")
+    print("right-click the top request -> Copy -> Copy as cURL, then run:")
+    print("  leetcode-save --sync-cookies")
     sys.exit(1)
 
 
@@ -327,13 +405,24 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  leetcode-save --sync-cookies       # grab your LeetCode cookies from the clipboard
   leetcode-save two-sum              # save 'two-sum' Java solution
   leetcode-save two-sum --lang cpp   # save C++ solution
   leetcode-save --latest             # save most recently accepted problem
   leetcode-save two-sum --no-push    # save locally without pushing
+
+First-time setup:
+  In Chrome on leetcode.com (logged in): DevTools -> Network, reload,
+  right-click the top request -> Copy -> Copy as cURL.
+  Then run: leetcode-save --sync-cookies
         """,
     )
     parser.add_argument("slug", nargs="?", help="Problem slug, e.g. two-sum")
+    parser.add_argument(
+        "--sync-cookies",
+        action="store_true",
+        help="Read your LeetCode cookies from a 'Copy as cURL' blob on the clipboard",
+    )
     parser.add_argument(
         "--latest", action="store_true", help="Use your most recent accepted submission"
     )
@@ -342,6 +431,10 @@ Examples:
         "--no-push", action="store_true", help="Commit locally but don't push"
     )
     args = parser.parse_args()
+
+    if args.sync_cookies:
+        sync_cookies()
+        return
 
     if not args.slug and not args.latest:
         parser.print_help()
