@@ -5,6 +5,7 @@ import os
 import re
 import sys
 import json
+import time
 import warnings
 import subprocess
 import argparse
@@ -25,23 +26,56 @@ except ImportError as e:
 
 GRAPHQL_URL = "https://leetcode.com/graphql"
 
-BLOCK = ("/*", "*/")
-TRIPLE = ('"""', '"""')
+SLASH = ("block", "/*", "*/")
+TRIPLE = ("block", '"""', '"""')
+RACKET = ("block", "#|", "|#")
+HASH = ("line", "#")
+PERCENT = ("line", "%")
+DASH = ("line", "--")
 
-# lang key -> (file extension, comment delimiters)
+# LeetCode's own language identifiers -> (file extension, comment style)
 LANG_MAP = {
-    "java": ("java", BLOCK),
+    "java": ("java", SLASH),
     "python": ("py", TRIPLE),
     "python3": ("py", TRIPLE),
-    "cpp": ("cpp", BLOCK),
-    "c": ("c", BLOCK),
-    "javascript": ("js", BLOCK),
-    "typescript": ("ts", BLOCK),
-    "go": ("go", BLOCK),
-    "rust": ("rs", BLOCK),
-    "kotlin": ("kt", BLOCK),
-    "swift": ("swift", BLOCK),
+    "cpp": ("cpp", SLASH),
+    "c": ("c", SLASH),
+    "csharp": ("cs", SLASH),
+    "javascript": ("js", SLASH),
+    "typescript": ("ts", SLASH),
+    "golang": ("go", SLASH),
+    "go": ("go", SLASH),
+    "rust": ("rs", SLASH),
+    "kotlin": ("kt", SLASH),
+    "swift": ("swift", SLASH),
+    "scala": ("scala", SLASH),
+    "php": ("php", SLASH),
+    "dart": ("dart", SLASH),
+    "ruby": ("rb", HASH),
+    "elixir": ("ex", HASH),
+    "erlang": ("erl", PERCENT),
+    "racket": ("rkt", RACKET),
+    "mysql": ("sql", DASH),
+    "mssql": ("sql", DASH),
+    "oraclesql": ("sql", DASH),
+    "postgresql": ("sql", DASH),
+    "pythondata": ("py", TRIPLE),
 }
+
+
+def comment_block(text, style):
+    """Wrap text in a comment using whichever style the language supports."""
+    kind = style[0]
+    if kind == "line":
+        prefix = style[1]
+        return "\n".join(
+            f"{prefix} {line}".rstrip() for line in text.splitlines()
+        )
+
+    open_c, close_c = style[1], style[2]
+    # A literal close delimiter would terminate the block early.
+    safe = text.replace(close_c, close_c[0] + " " + close_c[1:])
+    return f"{open_c}\n{safe}\n{close_c}"
 
 
 CONFIG_PATH = Path.home() / ".leetcode-save.env"
@@ -81,29 +115,51 @@ def whoami(session, csrf):
     return status.get("username") if status.get("isSignedIn") else None
 
 
+COPY_STEPS = """Do this in Chrome:
+  1. Open leetcode.com (logged in)
+  2. DevTools -> Network tab, then reload the page
+  3. Right-click the top request -> Copy -> Copy as cURL
+  4. Run: leetcode-save --sync-cookies   (or paste it straight in)"""
+
+
+def extract_cookies(raw):
+    session = re.search(r"LEETCODE_SESSION=([^;'\"\s]+)", raw)
+    csrf = re.search(r"csrftoken=([^;'\"\s]+)", raw)
+    if session and csrf:
+        return session.group(1), csrf.group(1)
+    return None
+
+
 def sync_cookies():
-    """Pull LeetCode cookies out of a 'Copy as cURL' blob sitting on the clipboard."""
-    clip = subprocess.run(["pbpaste"], capture_output=True, text=True).stdout
+    """Read LeetCode cookies from piped stdin, the clipboard, or an interactive paste."""
+    found = None
 
-    if not clip.strip():
-        print("Clipboard is empty. See --help for the copy step.")
-        sys.exit(1)
+    if not sys.stdin.isatty():
+        found = extract_cookies(sys.stdin.read())
+    else:
+        clip = subprocess.run(["pbpaste"], capture_output=True, text=True).stdout
+        found = extract_cookies(clip)
+        if found:
+            print("Found cookies on the clipboard.")
+        else:
+            print("No LeetCode cookies on the clipboard.")
+            print("")
+            print(COPY_STEPS)
+            print("")
+            print("Or paste the curl command here, then press Ctrl-D:")
+            try:
+                found = extract_cookies(sys.stdin.read())
+            except KeyboardInterrupt:
+                print("")
+                sys.exit(1)
 
-    session = re.search(r"LEETCODE_SESSION=([^;'\"\s]+)", clip)
-    csrf = re.search(r"csrftoken=([^;'\"\s]+)", clip)
-
-    if not session or not csrf:
-        print("Couldn't find LeetCode cookies on the clipboard.")
+    if not found:
+        print("Couldn't find LEETCODE_SESSION and csrftoken in that input.")
         print("")
-        print("Do this in Chrome:")
-        print("  1. Open leetcode.com (logged in)")
-        print("  2. DevTools -> Network tab, then reload the page")
-        print("  3. Click the top request, right-click it")
-        print("  4. Copy -> Copy as cURL")
-        print("  5. Re-run: leetcode-save --sync-cookies")
+        print(COPY_STEPS)
         sys.exit(1)
 
-    session, csrf = session.group(1), csrf.group(1)
+    session, csrf = found
 
     print("Found both cookies. Checking them with LeetCode...")
     user = whoami(session, csrf)
@@ -343,9 +399,8 @@ def html_to_plaintext(html_content):
     return text.strip()
 
 
-def build_file_content(problem, submission_details, delims):
+def build_file_content(problem, submission_details, style):
     """Solution code first, then the problem description in a trailing comment block."""
-    open_c, close_c = delims
     tags = ", ".join(t["name"] for t in (problem.get("topicTags") or []))
     runtime = (submission_details or {}).get("runtimeDisplay", "N/A")
     memory = (submission_details or {}).get("memoryDisplay", "N/A")
@@ -358,62 +413,188 @@ def build_file_content(problem, submission_details, delims):
         for i, hint in enumerate(hints, 1):
             description += f"  {i}. {html_to_plaintext(hint)}\n"
 
-    # A literal close delimiter inside the description would terminate the block early.
-    description = description.replace(close_c, close_c[0] + " " + close_c[1:])
-
-    url = f"https://leetcode.com/problems/{problem['titleSlug']}/"
-
-    return f"""{submission_details['code'].rstrip()}
-
-{open_c}
-{problem['questionFrontendId']}. {problem['title']}
-{url}
-
-Difficulty : {problem['difficulty']}
-Topics     : {tags}
-Runtime    : {runtime}
-Memory     : {memory}
-
-{'-' * 60}
-
-{description.strip()}
-{close_c}
-"""
-
-
-def save_to_repo(problem, submission_details, repo_path, lang_key):
-    num = str(problem["questionFrontendId"]).zfill(4)
-    ext, delims = LANG_MAP.get(lang_key.lower(), ("txt", BLOCK))
-    filename = f"{num}-{problem['titleSlug']}.{ext}"
-
-    (repo_path / filename).write_text(
-        build_file_content(problem, submission_details, delims), encoding="utf-8"
+    header = "\n".join(
+        [
+            f"{problem['questionFrontendId']}. {problem['title']}",
+            f"https://leetcode.com/problems/{problem['titleSlug']}/",
+            "",
+            f"Difficulty : {problem['difficulty']}",
+            f"Topics     : {tags}",
+            f"Runtime    : {runtime}",
+            f"Memory     : {memory}",
+            "",
+            "-" * 60,
+            "",
+            description.strip(),
+        ]
     )
 
-    return filename
+    return f"{submission_details['code'].rstrip()}\n\n{comment_block(header, style)}\n"
 
 
-def git_commit_push(repo_path, filename, problem_title, no_push):
-    def run(cmd, check=True):
-        result = subprocess.run(cmd, cwd=repo_path, capture_output=True, text=True)
-        if check and result.returncode != 0:
-            print(f"git error: {result.stderr.strip()}")
-            sys.exit(1)
-        return result.stdout.strip()
+def lang_extension(lang_key):
+    return LANG_MAP.get(lang_key.lower(), ("txt", SLASH))[0]
 
-    run(["git", "add", filename])
 
-    status = run(["git", "status", "--porcelain"])
-    if not status:
-        print("Nothing to commit — solution already saved.")
+def save_to_repo(problem, submission_details, repo_path, lang_key, version=False):
+    """Write the solution file.
+
+    With version=False the canonical <num>-<slug>.<ext> is written. With
+    version=True an existing file is kept and a new <num>.<n>-<slug>.<ext>
+    is added alongside it, unless that exact code is already stored.
+
+    Returns (filename, outcome) where outcome is new / updated / versioned / duplicate.
+    """
+    num = str(problem["questionFrontendId"]).zfill(4)
+    slug = problem["titleSlug"]
+    ext, style = LANG_MAP.get(lang_key.lower(), ("txt", SLASH))
+    content = build_file_content(problem, submission_details, style)
+
+    base = repo_path / f"{num}-{slug}.{ext}"
+
+    if not base.exists():
+        base.write_text(content, encoding="utf-8")
+        return base.name, "new"
+
+    if not version:
+        base.write_text(content, encoding="utf-8")
+        return base.name, "updated"
+
+    # Runtime and memory differ between runs, so compare only the code itself.
+    code = submission_details["code"].rstrip()
+    for f in sorted(repo_path.glob(f"{num}*-{slug}.{ext}")):
+        if f.read_text(encoding="utf-8").startswith(code):
+            return f.name, "duplicate"
+
+    n = 1
+    while (repo_path / f"{num}.{n}-{slug}.{ext}").exists():
+        n += 1
+    versioned = repo_path / f"{num}.{n}-{slug}.{ext}"
+    versioned.write_text(content, encoding="utf-8")
+    return versioned.name, "versioned"
+
+
+def git(repo_path, *cmd, check=True):
+    result = subprocess.run(
+        ["git", *cmd], cwd=repo_path, capture_output=True, text=True
+    )
+    if check and result.returncode != 0:
+        print(f"git error: {result.stderr.strip()}")
+        sys.exit(1)
+    return result.stdout.strip()
+
+
+def git_commit(repo_path, filename, problem_title):
+    """Stage and commit one file. Returns False if it produced no change."""
+    git(repo_path, "add", "--", filename)
+    if not git(repo_path, "status", "--porcelain"):
+        return False
+    git(repo_path, "commit", "-m", f"solve: {problem_title}")
+    return True
+
+
+SOLUTION_FILE = re.compile(r"^\d+(?:\.\d+)?-(.+)\.([^.]+)$")
+
+
+def existing_solutions(repo_path):
+    """(slug, extension) pairs already saved, read straight off the filenames."""
+    found = set()
+    for f in repo_path.iterdir():
+        m = SOLUTION_FILE.match(f.name)
+        if m:
+            found.add((m.group(1), m.group(2)))
+    return found
+
+
+def iter_submissions(headers, page=20, max_pages=50):
+    """Walk your submission history, newest first."""
+    query = """
+    query submissionList($offset: Int!, $limit: Int!) {
+      submissionList(offset: $offset, limit: $limit) {
+        submissions { id title titleSlug statusDisplay lang }
+      }
+    }
+    """
+    offset = 0
+    for _ in range(max_pages):
+        resp = requests.post(
+            GRAPHQL_URL,
+            json={"query": query, "variables": {"offset": offset, "limit": page}},
+            headers=headers,
+            timeout=20,
+        )
+        resp.raise_for_status()
+        listing = ((resp.json().get("data") or {}).get("submissionList")) or {}
+        batch = listing.get("submissions")
+
+        if batch is None:
+            auth_failed()
+        if not batch:
+            return
+
+        for sub in batch:
+            yield sub
+
+        if len(batch) < page:
+            return
+        offset += page
+        time.sleep(0.3)
+
+
+def sync_all(config, headers, no_push, lang_filter=None):
+    """Save every accepted solution that isn't in the repo yet."""
+    repo = config["repo_path"]
+    have = existing_solutions(repo)
+    print(f"Repo has {len(have)} solution(s) saved. Scanning your history...")
+
+    seen = set()
+    saved, skipped, failed = [], 0, []
+
+    for sub in iter_submissions(headers):
+        if sub["statusDisplay"] != "Accepted":
+            continue
+
+        slug, lang = sub["titleSlug"], sub["lang"]
+        if lang_filter and lang.lower() != lang_filter.lower():
+            continue
+
+        # Keyed by language too, so the same problem solved in Java and Python
+        # is saved twice. History is newest-first, so the first hit is latest.
+        key = (slug, lang_extension(lang))
+        if key in seen:
+            continue
+        seen.add(key)
+
+        if key in have:
+            skipped += 1
+            continue
+
+        try:
+            problem = fetch_problem(slug, headers)
+            details = fetch_submission_code(sub["id"], headers)
+            filename, _ = save_to_repo(problem, details, repo, lang)
+            git_commit(repo, filename, problem["title"])
+            saved.append(filename)
+            print(f"  + {filename}")
+        except (requests.RequestException, KeyError) as e:
+            failed.append(f"{slug} ({type(e).__name__})")
+            print(f"  ! {slug} — skipped: {e}")
+
+        time.sleep(0.4)
+
+    print("")
+    print(f"Saved {len(saved)} new, left {skipped} untouched.")
+    if failed:
+        print(f"Failed on {len(failed)}: {', '.join(failed)}")
+
+    if not saved:
+        print("Nothing new to push.")
         return
 
-    run(["git", "commit", "-m", f"solve: {problem_title}"])
-
     if no_push:
-        print("Committed locally (--no-push was set, skipping push).")
+        print("Committed locally (--no-push).")
     else:
-        run(["git", "push"])
+        git(repo, "push")
         print("Pushed to GitHub.")
 
 
@@ -423,28 +604,36 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  leetcode-save --sync-cookies       # grab your LeetCode cookies from the clipboard
-  leetcode-save two-sum              # save 'two-sum' Java solution
-  leetcode-save two-sum --lang cpp   # save C++ solution
-  leetcode-save --latest             # save most recently accepted problem
-  leetcode-save two-sum --no-push    # save locally without pushing
+  leetcode-save                      # save everything new, skip what's already saved
+  leetcode-save --sync-cookies       # set up / refresh your LeetCode cookies
+  leetcode-save two-sum              # save one problem by slug
+  leetcode-save --latest             # save just your most recent accepted problem
+  leetcode-save --no-push            # commit locally without pushing
 
 First-time setup:
   In Chrome on leetcode.com (logged in): DevTools -> Network, reload,
   right-click the top request -> Copy -> Copy as cURL.
   Then run: leetcode-save --sync-cookies
+
+Running with no arguments walks your submission history and saves every
+accepted solution missing from the repo. Files already there are left
+alone, so it is safe to re-run and doubles as a first-time backfill.
         """,
     )
     parser.add_argument("slug", nargs="?", help="Problem slug, e.g. two-sum")
     parser.add_argument(
         "--sync-cookies",
         action="store_true",
-        help="Read your LeetCode cookies from a 'Copy as cURL' blob on the clipboard",
+        help="Set up cookies from a 'Copy as cURL' blob (clipboard, pipe, or paste)",
     )
     parser.add_argument(
-        "--latest", action="store_true", help="Use your most recent accepted submission"
+        "--latest", action="store_true", help="Save only your most recent accepted submission"
     )
-    parser.add_argument("--lang", default="java", help="Language key (default: java)")
+    parser.add_argument(
+        "--lang",
+        default=None,
+        help="Language for a single save (default: java). Filters a full sync.",
+    )
     parser.add_argument(
         "--no-push", action="store_true", help="Commit locally but don't push"
     )
@@ -454,14 +643,15 @@ First-time setup:
         sync_cookies()
         return
 
-    if not args.slug and not args.latest:
-        parser.print_help()
-        sys.exit(0)
-
     config = load_config()
     headers = make_headers(config)
 
-    lang_key = args.lang.lower()
+    # No slug and no --latest: sync everything missing (also the first-run backfill).
+    if not args.slug and not args.latest:
+        sync_all(config, headers, args.no_push, lang_filter=args.lang)
+        return
+
+    lang_key = (args.lang or "java").lower()
 
     if args.latest:
         print(f"Finding your most recent accepted {lang_key} submission...")
@@ -493,10 +683,30 @@ First-time setup:
         f"  Memory: {submission.get('memoryDisplay', 'N/A')}"
     )
 
-    filename = save_to_repo(problem, submission, config["repo_path"], lang_key)
-    print(f"Saved: {filename}")
+    repo = config["repo_path"]
+    filename, outcome = save_to_repo(
+        problem, submission, repo, lang_key, version=True
+    )
 
-    git_commit_push(config["repo_path"], filename, problem["title"], args.no_push)
+    if outcome == "duplicate":
+        print(f"Already saved as {filename} with identical code — nothing to do.")
+        return
+
+    if outcome == "versioned":
+        print(f"Saved as a new version: {filename}")
+    else:
+        print(f"Saved: {filename}")
+
+    if not git_commit(repo, filename, problem["title"]):
+        print("No change to commit.")
+        return
+
+    if args.no_push:
+        print("Committed locally (--no-push).")
+    else:
+        git(repo, "push")
+        print("Pushed to GitHub.")
+
     print(f"\nDone! ✓  #{problem['questionFrontendId']} {problem['title']}")
 
 

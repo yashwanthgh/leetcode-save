@@ -116,18 +116,47 @@ happens.
 ## Usage
 
 ```bash
-leetcode-save two-sum              # save a specific problem by its URL slug
-leetcode-save --latest             # save your most recently accepted problem
-leetcode-save two-sum --lang cpp   # pick a language (default: java)
-leetcode-save two-sum --no-push    # commit locally, skip the push
+leetcode-save                      # save everything new (this is the one you'll use)
+leetcode-save --latest             # save only your most recent accepted problem
+leetcode-save two-sum              # save one problem by slug
+leetcode-save --no-push            # commit locally, skip the push
 ```
+
+Run it bare and it walks your submission history, saving every accepted solution that
+isn't in the repo yet. Files already there are **never touched**, so it's safe to re-run
+as often as you like — and the first run doubles as a full backfill of everything you've
+already solved.
 
 The slug is the last part of the problem URL — `leetcode.com/problems/two-sum/` → `two-sum`.
 
-### Supported languages
+### Multiple languages
 
-`java`, `python`, `python3`, `cpp`, `c`, `javascript`, `typescript`, `go`, `rust`,
-`kotlin`, `swift`. The file extension and comment style follow the language.
+Solve the same problem in more than one language and each gets its own file:
+
+```
+0013-roman-to-integer.java
+0013-roman-to-integer.cs
+```
+
+Supported: Java, Python, C, C++, C#, JavaScript, TypeScript, Go, Rust, Kotlin, Swift,
+Scala, PHP, Ruby, Dart, Elixir, Erlang, Racket, and the SQL dialects. Extension and
+comment style follow the language — block comments where the language has them, line
+comments where it doesn't.
+
+### Re-solving a problem
+
+If you improve a solution and save it again, the old file stays and the new one lands
+beside it:
+
+```
+0001-two-sum.java        ← your first accepted answer
+0001.1-two-sum.java      ← the improved one
+0001.2-two-sum.java      ← and the next
+```
+
+Re-saving identical code is a no-op, so you won't collect duplicates. A full sync keeps
+one file per problem-and-language; versioning happens when you explicitly save a problem
+you've already got.
 
 ## Notes
 
